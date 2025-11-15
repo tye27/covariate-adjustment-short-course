@@ -1,0 +1,440 @@
+---
+title: 'Practical 1: Basic Covariate Adjustment (KEY)'
+author: "Ting Ye"
+subtitle: "Seventh Seattle Symposium in Biostatistics, Nov 16, 2025"
+output:
+  html_document:
+    df_print: paged
+    theme: paper
+  html_notebook:
+    theme: paper
+  pdf_document: default
+---
+## 0. Preparation -- packages and functions
+
+### Install `RobinCar`
+
+Download and Install the `RobinCar` package: uncomment and run the code below.
+
+```{r,message=F}
+# install.packages("RobinCar")
+```
+
+### Pre-load packages and functions
+
+Let's load the `RobinCar` package. We will also use the `tidyverse` and `fastDummies` packages for data manipulation, `MASS` for simulating negative binomial outcomes and fitting negative binomial GLMs, and `broom` for convert statistical analysis objects from R into tidy data frames.
+
+```{r,message=F}
+# devtools::install_github("mbannick/RobinCar")
+library(RobinCar)
+library(tidyverse)
+library(fastDummies)
+library(MASS)
+library(broom)
+
+# load functions for data generation
+Fun_datagen <- function(Fun.n = 500, Fun.y.type = c("continuous","binary","count"), Fun.rand = c("SR","CAR"), Fun.p = 2/3){
+  
+  # generate the covariates Xc, Xb and stratification variable Z
+  df <- tibble(
+    Xc = runif(Fun.n), 
+    Xb = rbinom(Fun.n, size = 1, prob = 0.5)
+  ) %>% 
+    mutate(Z = cut(Xc, breaks = c(0, 1/3, 2/3, 1), labels = paste0("strata", c(1:3))))
+  
+  # generate treatment assignment A by SR or CAR
+  if(Fun.rand == "SR"){
+    df <- df %>% mutate(A = rbinom(n=Fun.n, size=1, prob=Fun.p))
+  }else if(Fun.rand == "CAR"){
+    df$A <- RobinCar::car_pb(z = df %>% dplyr::select(Z), trt_label=c(0, 1), trt_alc=c(1-Fun.p, Fun.p), blocksize=6L)
+  }
+  
+  # generate outcome y
+  if(Fun.y.type == "continuous"){
+    df <- df %>%
+      mutate(y = (1-A)*(Xc+0.1*Xb) + A*(0.3*Xc+0.3*Xb))
+  }else if(Fun.y.type == "binary"){
+    df <- df %>% mutate(y = rbinom(n = Fun.n, size = 1, prob = (1-A)*(0.5*Xc+0.25*Xc^2+0.1*Xb) + A*exp(Xc+Xc^2+0.3*Xb)/(1+exp(Xc+Xc^2+0.3*Xb))))
+  }else if(Fun.y.type == "count"){
+    df <- df %>% mutate(y = MASS::rnegbin(n = Fun.n, mu = A*(2*Xc+5*Xc^2+0.1*Xb) + (1-A)*log(6*Xc^3+2+0.3*Xb), theta = 4))
+  }
+  
+  df <- df %>% mutate(A = factor(A))
+  return(df)
+}
+```
+
+
+## 1. Unadjusted estimation and linear adjustment
+
+(a) Generate a simulated dataset with n=500 and continuous outcome under simple randomization using 1:2 allocation to control and treatment  (seed 0927)
+
+```{r}
+set.seed(0927)
+dfSim <- Fun_datagen(Fun.n = 500, Fun.y.type = "continuous", Fun.rand = "SR", Fun.p = 2/3)
+```
+
+(b) Use RobinCAR to obtain ANOVA, ANCOVA, ANHECOVA estimators
+```{r}
+print(RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", adj_method = "ANOVA")$result)
+print(RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANCOVA")$result)
+print(RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANHECOVA")$result)
+```
+
+(c) Run simulations using the provided code. What do the results show?
+
+```{r}
+## Get true mean of the outcome under each A=a
+true_mean <- Fun_datagen(Fun.n = 1e7, Fun.y.type = "continuous", Fun.rand = "SR", Fun.p = 1/2) %>% 
+  group_by(A) %>% summarize(true_mean = mean(y)) %>% pivot_wider(names_from = A, values_from = true_mean) %>% unlist()
+
+## Generate 1000 simulated datasets with seeds 1:1000
+dfSim_List <- lapply(1:1000, function(seed){set.seed(seed); Fun_datagen(Fun.n = 500, Fun.y.type = "continuous", Fun.rand = "SR", Fun.p = 2/3)})
+
+## Get unadjusted, ANCOVA, ANHECOVA estimators for every dataset, using either your own function or robincar_linear;
+## bind 500 results by rows, ouput a dataframe with 500 rows and 2 cols
+UnadjSim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){RobinCar::robincar_linear(df = x, treat_col = "A", response_col = "y", adj_method = "ANOVA")$result$estimate}))
+ANCOVASim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){RobinCar::robincar_linear(df = x, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANCOVA")$result$estimate}))
+ANHECOVASim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANHECOVA")$result$estimate}))
+
+## Summarize the results from 3 methods, and report bias and sd for all estimators
+### Bias
+apply(UnadjSim_est, 2, mean)-true_mean
+apply(ANCOVASim_est, 2, mean)-true_mean
+apply(ANHECOVASim_est, 2, mean)-true_mean
+### SD
+apply(UnadjSim_est, 2, sd)
+apply(ANCOVASim_est, 2, sd)
+apply(ANHECOVASim_est, 2, sd)
+```
+
+(d) Code your own function for unadjusted estimator
+
+```{r}
+Fun_unadj <- function(Fun.data = dfSim){
+  
+  # sample mean of outcomes (y's) for subjects with A=0 or A=1.
+  Fun.est_un0 <- with(Fun.data, mean(y[A==0]))
+  Fun.est_un1 <- with(Fun.data, mean(y[A==1]))
+  
+  return(c(UN_est0 = Fun.est_un0, UN_est1 = Fun.est_un1))
+}
+
+Fun_unadj(Fun.data = dfSim)
+```
+
+(e) Code your own function for ANCOVA adjustment
+
+```{r}
+Fun_ancova <- function(Fun.data = dfSim, Fun.covariates = c("Xc", "Xb")){
+  
+  # obtain design matrix with all covariates as numeric (mainly to dummy the categorical covariates)
+  Fun.datacov <- model.matrix(~., data = Fun.data[, Fun.covariates])[, -1] # remove intercept column
+  
+  # form model data with outcome, treatment and covariates 
+  Fun.datamod <- cbind.data.frame(Fun.data[ ,c('y', 'A')], Fun.datacov)
+  
+  # fit ANCOVA model 
+  Fun.lm <- lm(y ~ A+., data = Fun.datamod)
+  
+  # form data.frames having the same structure as Fun.datamod (input of newdata for "predict" function), which has 
+  # A=a, and columns named with Fun.covariates = mean of columns named with Fun.covariates in Fun.datamod (i.e., X_bar for X in Fun.datamod)
+  
+  Fun.dfA0 <- as.data.frame(as.list(colMeans(Fun.datamod[, Fun.covariates])))
+  Fun.dfA0$A <- sort(unique(Fun.data$A))[1]
+
+  Fun.dfA1 <- as.data.frame(as.list(colMeans(Fun.datamod[, Fun.covariates])))
+  Fun.dfA1$A <- sort(unique(Fun.data$A))[2]
+  
+  # # alternative way to form the new data for obtaining fitted value using dplyr
+  # Fun.dfA0 <- Fun.data %>% summarise(across(.cols = all_of(Fun.covariates), .fns = mean)) %>% mutate(A = sort(unique(Fun.data$A))[1]) 
+  # Fun.dfA1 <- Fun.data %>% summarise(across(.cols = all_of(Fun.covariates), .fns = mean)) %>% mutate(A = sort(unique(Fun.data$A))[2])
+  
+  # ANCOVA estimator: predicted/fitted value from ANCOVA model at (A=a, X=X_bar)
+  Fun.est_ancova0 <- predict(Fun.lm, newdata = Fun.dfA0)
+  Fun.est_ancova1 <- predict(Fun.lm, newdata = Fun.dfA1)
+  
+  Fun.return <- c(Fun.est_ancova0,Fun.est_ancova1)
+  names(Fun.return)<-c("ANCOVA_est0","ANCOVA_est1")
+  return(Fun.return)
+}
+
+Fun_ancova(Fun.data = dfSim, Fun.covariates = c("Xc", "Xb"))
+```
+
+(f) Code your own function for ANHECOVA adjustment
+
+```{r}
+Fun_anhecova <- function(Fun.data = dfSim, Fun.covariates = c("Xc", "Xb")){
+  
+  # obtain design matrix with all covariates as numeric (mainly to dummy the categorical covariates)
+  Fun.datacov <- model.matrix(~., data = Fun.data[, Fun.covariates])[, -1] # remove intercept column
+  
+  # form model data with outcome, treatment and covariates 
+  Fun.datamod <- cbind.data.frame(Fun.data[ ,c('y', 'A')], Fun.datacov)
+  
+  # fit ANHECOVA model 
+  Fun.lm <- lm(y ~ A*., data = Fun.datamod)
+  
+  # form data.frames having the same structure as Fun.datamod (input of newdata for "predict" function), which has 
+  # A=a, and columns named with Fun.covariates = mean of columns named with Fun.covariates in Fun.datamod (i.e., X_bar for X in Fun.datamod)
+    
+  Fun.dfA0 <- as.data.frame(as.list(colMeans(Fun.datamod[, Fun.covariates])))
+  Fun.dfA0$A <- sort(unique(Fun.data$A))[1]
+
+  Fun.dfA1 <- as.data.frame(as.list(colMeans(Fun.datamod[, Fun.covariates])))
+  Fun.dfA1$A <- sort(unique(Fun.data$A))[2]
+  
+  # # alternative way to form the new data for obtaining fitted value
+  # Fun.dfA0 <- Fun.data %>% summarise(across(.cols = all_of(Fun.covariates), .fns = mean)) %>% mutate(A = sort(unique(Fun.data$A))[1])
+  # Fun.dfA1 <- Fun.data %>% summarise(across(.cols = all_of(Fun.covariates), .fns = mean)) %>% mutate(A = sort(unique(Fun.data$A))[2])
+
+  # ANHECOVA estimator: predicted/fitted value from ANCOVA model at (A=a, X=X_bar)
+  Fun.est_anhecova0 <- predict(Fun.lm, newdata = Fun.dfA0)
+  Fun.est_anhecova1 <- predict(Fun.lm, newdata = Fun.dfA1)
+  
+  Fun.return <- c(Fun.est_anhecova0,Fun.est_anhecova1)
+  names(Fun.return)<-c("ANHECOVA_est0","ANHECOVA_est1")
+  return(Fun.return)
+}
+
+Fun_anhecova(Fun.data = dfSim, Fun.covariates = c("Xc", "Xb"))
+```
+
+
+## 2. G-computation
+
+(a) Generate a simulated dataset with n=500 and binary outcome under simple randomization using 1:2 allocation to control and treatment  (seed 0927)
+
+```{r}
+set.seed(0927)
+dfSim <- Fun_datagen(Fun.n = 500, Fun.y.type = "binary", Fun.rand = "SR", Fun.p = 2/3)
+```
+
+(b) Read a hand-coded R function for G-computation
+
+```{r}
+Fun_gcomp <- function(Fun.data = dfSim, Fun.model = glm(y ~ A + Xc + Z, family = binomial, data=dfSim)){
+  
+  # Get prediction for each patient under both treatment and control
+  Fun.dfA0 <- Fun.data
+  Fun.dfA1 <- Fun.data
+  
+  Fun.dfA0$A <- sort(unique(Fun.data$A))[1]
+  Fun.dfA1$A <- sort(unique(Fun.data$A))[2]
+  
+  Fun.y_pred0 <- predict(Fun.model, newdata=Fun.dfA0, type="response")
+  Fun.y_pred1 <- predict(Fun.model, newdata=Fun.dfA1, type="response")
+  
+  # G-computation estimator: average predicted outcome under treatment and control
+  Fun.meanG0 <- mean(Fun.y_pred0)
+  Fun.meanG1 <- mean(Fun.y_pred1)
+  
+  Fun.return <- c(Fun.meanG0,Fun.meanG1)
+  names(Fun.return)<-c("G_est0","G_est1")
+  return(Fun.return)
+}
+
+Fun_gcomp(Fun.model = glm(y ~ A + Xc + Xb, family = binomial, data=dfSim))
+```
+
+(c) Run simulations using the provided code. *Note the count outcome, so Poisson regression and negative binomial regression are used in g-computation*. What do the results show?
+```{r}
+## Get true mean of the outcome under each A=a
+true_mean <- Fun_datagen(Fun.n = 1e7, Fun.y.type = "count", Fun.rand = "SR", Fun.p = 1/2) %>% 
+  group_by(A) %>% summarize(true_mean = mean(y)) %>% pivot_wider(names_from = A, values_from = true_mean) %>% unlist()
+
+## Generate 1000 simulated datasets as list (seeds 1:1000)
+dfSim_List <- lapply(1:1000, function(seed){set.seed(seed); Fun_datagen(Fun.n = 500, Fun.y.type = "count", Fun.rand = "SR", Fun.p = 2/3)})
+
+## Apply G-computation estimates with Poisson regression and Negative Binomial Regression with unknown dispersion parameter, use your own function Fun_gcomp
+## bind 500 estimates by rows, ouput a dataframe with 500 rows and 2 cols
+GPoissonSim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){Fun_gcomp(Fun.data = x, Fun.model = glm(y ~ A + Xc + Xb, family = poisson, data=x))}))
+GNBSim_est      <- do.call(bind_rows, lapply(dfSim_List, function(x){Fun_gcomp(Fun.data = x, Fun.model = MASS::glm.nb(y ~ A + Xc + Xb, data=x))}))
+
+## Summarize the results from the two methods, and report bias and sd for all estimators
+### Bias
+apply(GPoissonSim_est, 2, mean)-true_mean
+apply(GNBSim_est, 2, mean)-true_mean
+### SD
+apply(GPoissonSim_est, 2, sd)
+apply(GNBSim_est, 2, sd)
+```
+
+## 3. AIPW
+
+(a) Generate a simulated dataset with n=500 and count outcome under simple randomization using 1:2 allocation to control and treatment  (seed 0927)
+
+```{r}
+set.seed(0927)
+dfSim <- Fun_datagen(Fun.n = 500, Fun.y.type = "count", Fun.rand = "SR", Fun.p = 2/3)
+```
+
+(b) Read a hand-coded R function for AIPW
+
+```{r}
+Fun_aipw <- function(Fun.data = dfSim, Fun.model = glm.nb(Y3 ~ A + X + Z, data=dfSim)){
+  
+  # Get prediction for each patient under both treatment and control
+  Fun.dfA0 <- Fun.data
+  Fun.dfA1 <- Fun.data
+  
+  Fun.dfA0$A <- sort(unique(Fun.data$A))[1]
+  Fun.dfA1$A <- sort(unique(Fun.data$A))[2]
+  
+  Fun.data$y_pred0 <- predict(Fun.model, newdata=Fun.dfA0, type="response")
+  Fun.data$y_pred1 <- predict(Fun.model, newdata=Fun.dfA1, type="response")
+  
+  
+  # Second term (g-computation part): average responses under treatment and control
+  Fun.meanG0 <- mean(Fun.data$y_pred0)
+  Fun.meanG1 <- mean(Fun.data$y_pred1)
+  
+  
+  # First term: correct for prediction unbiasedness
+  Fun.predbias0 <- with(Fun.data, mean((y-y_pred0)[A==0]))
+  Fun.predbias1 <- with(Fun.data, mean((y-y_pred1)[A==1]))
+  
+  
+  # AIPW estimator: First term + Second term
+  Fun.meanAIPW0 <- Fun.meanG0 + Fun.predbias0
+  Fun.meanAIPW1 <- Fun.meanG1 + Fun.predbias1
+  
+  Fun.return <- c(Fun.meanAIPW0, Fun.meanAIPW1)
+  names(Fun.return) <- c("AIPW_est0", "AIPW_est1")
+  return(Fun.return)
+}
+```
+
+(c) Compare AIPW and g-computation using Poisson regression (which is a canonical link GLM)
+
+```{r}
+Fun_aipw(Fun.data = dfSim, Fun.model = glm(y ~ A + Xc + Xb, family = poisson, data=dfSim))
+Fun_gcomp(Fun.model = glm(y ~ A + Xc + Xb, family = poisson, data=dfSim))
+```
+
+(d) Compare AIPW and g-computation using negative binomial regression (not a canonical link GLM)
+
+```{r}
+Fun_aipw(Fun.data = dfSim, Fun.model = MASS::glm.nb(y ~ A + Xc + Xb, data=dfSim))
+Fun_gcomp(Fun.model = MASS::glm.nb(y ~ A + Xc + Xb, data=dfSim))
+```
+
+(e) Use RobinCAR to obtain AIPW estimators
+
+```{r}
+# use RobinCAR to obtain AIPW estimators by setting "formula"
+print(RobinCar::robincar_glm(df = dfSim, treat_col = "A", response_col = "y", g_family = stats::poisson, formula = "y ~ A + Xc + Xb")$result)
+print(RobinCar::robincar_glm(df = dfSim, treat_col = "A", response_col = "y", g_family = "nb", formula = "y ~ A + Xc + Xb")$result)
+```
+
+(f) Run simulations using the provided code. *Note the count outcome so Poisson regression and negative binomial regression are used in AIPW. The data are the same as that in Problem 2(f)*. What do the results show?
+
+```{r}
+## Get true mean of the outcome under each A=a
+true_mean <- Fun_datagen(Fun.n = 1e7, Fun.y.type = "count", Fun.rand = "SR", Fun.p = 1/2) %>% 
+  group_by(A) %>% summarize(true_mean = mean(y)) %>% pivot_wider(names_from = A, values_from = true_mean) %>% unlist()
+
+## Generate 1000 simulated datasets as list (seeds 1:1000)
+dfSim_List <- lapply(1:1000, function(seed){set.seed(seed); Fun_datagen(Fun.n = 500, Fun.y.type = "count", Fun.rand = "SR", Fun.p = 2/3)})
+
+## Apply G-computation estimates with Poisson regression and Negative Binomial Regression with unknown dispersion parameter, use your own function Fun_gcomp
+## bind 500 estimates by rows, ouput a dataframe with 500 rows and 2 cols
+AIPWPoissonSim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){Fun_aipw(Fun.data = x, Fun.model = glm(y ~ A + Xc + Xb, family = poisson, data=x))}))
+AIPWNBSim_est      <- do.call(bind_rows, lapply(dfSim_List, function(x){Fun_aipw(Fun.data = x, Fun.model = MASS::glm.nb(y ~ A + Xc + Xb, data=x))}))
+
+## Summarize the results from the two methods, and report bias and sd for all estimators
+### Bias
+apply(AIPWPoissonSim_est, 2, mean)-true_mean
+apply(AIPWNBSim_est, 2, mean)-true_mean
+### SD
+apply(AIPWPoissonSim_est, 2, sd)
+apply(AIPWNBSim_est, 2, sd)
+```
+
+## 4. Robust variance estimation
+
+(a) Compare the student t-test, welch t-test, and anova (done in the lectures)
+```{r}
+simOne_anova <- function(){
+  y0 <- rnorm(500, mean = 0, sd = 1.5)
+  y1 <- rnorm(500, mean = 0, sd = 1.2)
+  A <- rbinom(500, size = 1, prob = 2/3)
+  y <- (1-A)*y0 + A*y1
+ 
+  rej_student <- tidy(t.test(y[A==0], y[A==1], var.equal = T))$p.value < 0.05
+  rej_welch <- tidy(t.test(y~A))$p.value < 0.05
+  rej_mod <- tidy(lm(y~A))$p.value[2] < 0.05
+ 
+  return(c(rej_welch = rej_welch, rej_student = rej_student, rej_mod = rej_mod))
+}
+ 
+sim_anova <- replicate(5000, simOne_anova())
+rowMeans(sim_anova)
+```
+
+
+(b) Again, Generate a simulated dataset with n=500 and binary outcome under *stratified permuted block randomization* (stratifying by Z) using 1:2 allocation to control and treatment  (seed 0927). In each of the following adjustment method for Xc and Xb: (i) ANCOVA adjustment; (ii) ANHECOVA adjustment; and (iii) g-computation with poisson model; calculate the variance estimator of mean difference and mean ratio under *simple randomization* and compute the 95% confidence intervals.
+
+```{r}
+set.seed(0927)
+dfSim <- Fun_datagen(Fun.n = 500, Fun.y.type = "count", Fun.rand = "CAR", Fun.p = 2/3)
+
+Fun_h_diff <- function(h){c(h[2]-h[1])}
+Fun_h_logratio <- function(h){log(h[2]-h[1])}
+
+# inference NOT accounting for CAR (i.e., derived under SR)
+robin_ancova <- RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANCOVA", car_scheme = "simple")
+print(robin_ancova)
+
+robin_anhecova <- RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANHECOVA", car_scheme = "simple")
+print(robin_anhecova)
+
+robin_aipw <- RobinCar::robincar_glm(df = dfSim, treat_col = "A", response_col = "y", formula="y~A+Xc+Xb", g_family = stats::poisson, car_scheme = "simple")
+print(robin_aipw)
+
+RobinCar::robincar_contrast(result = robin_ancova, contrast_h = Fun_h_diff)
+RobinCar::robincar_contrast(result = robin_anhecova, contrast_h = Fun_h_diff)
+RobinCar::robincar_contrast(result = robin_aipw, contrast_h = Fun_h_diff)
+RobinCar::robincar_contrast(result = robin_aipw, contrast_h = "diff") # an alternative specification
+
+RobinCar::robincar_contrast(result = robin_ancova, contrast_h = Fun_h_logratio)
+RobinCar::robincar_contrast(result = robin_anhecova, contrast_h = Fun_h_logratio)
+contrast_aipw1<-RobinCar::robincar_contrast(result = robin_aipw, contrast_h = Fun_h_logratio)
+print(contrast_aipw1)
+# get the 95% confidence interval for mean ratio
+# first on log odds scale
+res <- contrast_aipw1$result$estimate + c(-1, 1) * qnorm(0.975) * contrast_aipw1$result$se
+res
+# Exponentiate CI
+exp(res)
+
+RobinCar::robincar_glm(df = dfSim, treat_col = "A", response_col = "y", formula = "y~A+Xc+Xb",
+                       g_family = stats::poisson, car_scheme = "simple", contrast_h = Fun_h_diff) # one-step approach for getting variance estimator of contrast
+
+```
+
+
+(c) For the data simulated above, in each of the following adjustment method for Xc and Xb: (i) ANCOVA adjustment; (ii) ANHECOVA adjustment; and (iii) g-computation with poisson model; calculate the variance estimator of mean difference and mean ratio under *stratified permuted block randomization*  and compute the 95% confidence intervals. *Compare with 4(b)*. 
+
+```{r}
+# inference accounting for CAR (i.e., derived under stratified permuted block randomization)
+robin_ancova_car <- RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", car_strata_cols = "Z", covariate_cols = c("Xc", "Xb"), car_scheme = "permuted-block", adj_method = "ANCOVA")
+robin_anhecova_car <- RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", car_strata_cols = "Z", covariate_cols = c("Xc", "Xb"), car_scheme = "permuted-block", adj_method = "ANHECOVA")
+robin_aipw_car <- RobinCar::robincar_glm(df = dfSim, treat_col = "A", response_col = "y", car_strata_cols = "Z", formula = "y~A+Xc+Xb", car_scheme = "permuted-block", g_family = stats::poisson)
+
+RobinCar::robincar_contrast(result = robin_ancova_car, contrast_h = Fun_h_diff)
+RobinCar::robincar_contrast(result = robin_anhecova_car, contrast_h = Fun_h_diff)
+RobinCar::robincar_contrast(result = robin_aipw_car, contrast_h = Fun_h_diff)
+RobinCar::robincar_contrast(result = robin_aipw_car, contrast_h = "diff") # an alternative specification
+
+RobinCar::robincar_contrast(result = robin_ancova_car, contrast_h = Fun_h_logratio)
+RobinCar::robincar_contrast(result = robin_anhecova_car, contrast_h = Fun_h_logratio)
+RobinCar::robincar_contrast(result = robin_aipw_car, contrast_h = Fun_h_logratio)
+
+RobinCar::robincar_glm(df = dfSim, treat_col = "A", response_col = "y", car_strata_cols = "Z", formula = "y~A+Xc+Xb", g_family = stats::poisson, car_scheme = "permuted-block", contrast_h = Fun_h_diff) # one-step approach for getting variance estimator of contrast
+```
+
+
+
+
