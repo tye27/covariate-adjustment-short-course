@@ -1,0 +1,139 @@
+---
+title: 'Practical 2: Covariate Adjustment for Survival Analysis'
+author: "Ting Ye"
+subtitle: "Seventh Seattle Symposium in Biostatistics, Nov 16, 2025"
+output:
+  html_document:
+    df_print: paged
+    theme: paper
+  html_notebook:
+    theme: paper
+  pdf_document: default
+---
+
+## 0. Preparation -- packages and functions
+
+### Install `RobinCar`
+
+Download and Install the `RobinCar` package: uncomment and run the code below.
+
+```{r,message=F}
+# install.packages("RobinCar")
+```
+
+### Pre-load packages and functions
+
+Let's load the `RobinCar` package and other necessary libraries.
+
+```{r,message=F}
+library(RobinCar)
+library(speff2trial) # for loading the ACTG175 data
+library(survival)
+library(ggplot2)
+library(dplyr)
+```
+
+
+## 1. Re-analysis of the ACTG data for unconditional estimand
+
+### (a) Standard unadjusted analysis
+
+```{r}
+data(ACTG175)
+
+# Log-rank test
+survdiff(Surv(days, cens) ~ treat, data = ACTG175)
+
+# Unadjusted Cox model
+cox_fit_uncond <- coxph(Surv(days, cens) ~ treat, data = ACTG175)
+summary(cox_fit_uncond)
+```
+
+### (b) Standard multivariate Cox model analysis
+
+How is the interpretation of Cox model coefficients change with adjusting for additional covariates?
+
+```{r}
+cox_fit_cond <- coxph(Surv(days, cens) ~ treat + preanti + cd40, data = ACTG175)
+summary(cox_fit_cond)
+```
+
+**Interpretation**: The conditional Cox model provides hazard ratios conditional on the covariate values. The treatment effect is interpreted as the effect for patients with the same baseline CD4 count and antiretroviral history. This is a conditional estimand that may differ from the marginal (population-average) treatment effect.
+
+
+### (c) Covariate adjusted log-rank test
+
+Accounting for stratified randomization. How to interpret the results and the effect estimate?
+
+```{r}
+# Covariate-adjusted log-rank test
+robincar_logrank(
+  df = ACTG175,
+  treat_col = "treat",
+  response_col = "days",
+  event_col = "cens",
+  car_strata_cols = "strat",
+  covariate_cols = c("preanti", "cd40"),
+  car_scheme = "permuted-block",
+  adj_method = "CL",
+  ref_arm = 0
+)
+
+# Covariate-adjusted hazard ratio
+robincar_covhr(
+  df = ACTG175,
+  treat_col = "treat",
+  response_col = "days",
+  event_col = "cens",
+  car_strata_cols = "strat",
+  covariate_cols = c("preanti", "cd40"),
+  car_scheme = "permuted-block",
+  adj_method = "CL",
+  ref_arm = 0,
+  interval = c(-10, 10)
+)
+```
+
+**Interpretation**: The `robincar_logrank` function provides a covariate-adjusted test that accounts for both the stratified randomization and baseline covariates while targeting the marginal (unconditional) treatment effect. The `robincar_covhr` function estimates the marginal hazard ratio.
+
+
+## 2. Stratified analysis of the ACTG data
+
+### (a) Stratified log-rank test (stratified by strat)
+
+```{r}
+survdiff(Surv(days, cens) ~ treat + strata(strat), data = ACTG175)
+
+coxph(Surv(days, cens) ~ treat+ strata(strat), data = ACTG175)
+```
+
+### (b) Covariate adjustment for the stratified analysis using robincar package
+
+```{r}
+robincar_logrank(
+  df=ACTG175,
+  treat_col="treat",
+  response_col="days",
+  event_col="cens",
+  car_strata_cols="strat",
+  covariate_cols=c("preanti", "cd40"),
+  car_scheme="permuted-block",
+  adj_method="CSL",
+  ref_arm=0
+)
+
+robincar_covhr(
+  df=ACTG175,
+  treat_col="treat",
+  response_col="days",
+  event_col="cens",
+  car_strata_cols="strat",
+  covariate_cols=c("preanti", "cd40"),
+  car_scheme="permuted-block",
+  adj_method = "CSL",
+  ref_arm = 0,
+  interval = c(-10, 10)
+)
+```
+
+

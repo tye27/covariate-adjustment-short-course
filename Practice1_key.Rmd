@@ -25,7 +25,6 @@ Download and Install the `RobinCar` package: uncomment and run the code below.
 Let's load the `RobinCar` package. We will also use the `tidyverse` and `fastDummies` packages for data manipulation, `MASS` for simulating negative binomial outcomes and fitting negative binomial GLMs, and `broom` for convert statistical analysis objects from R into tidy data frames.
 
 ```{r,message=F}
-# devtools::install_github("mbannick/RobinCar")
 library(RobinCar)
 library(tidyverse)
 library(fastDummies)
@@ -95,7 +94,7 @@ dfSim_List <- lapply(1:1000, function(seed){set.seed(seed); Fun_datagen(Fun.n = 
 ## bind 500 results by rows, ouput a dataframe with 500 rows and 2 cols
 UnadjSim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){RobinCar::robincar_linear(df = x, treat_col = "A", response_col = "y", adj_method = "ANOVA")$result$estimate}))
 ANCOVASim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){RobinCar::robincar_linear(df = x, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANCOVA")$result$estimate}))
-ANHECOVASim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){RobinCar::robincar_linear(df = dfSim, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANHECOVA")$result$estimate}))
+ANHECOVASim_est <- do.call(bind_rows, lapply(dfSim_List, function(x){RobinCar::robincar_linear(df = x, treat_col = "A", response_col = "y", covariate_cols = c("Xc", "Xb"), adj_method = "ANHECOVA")$result$estimate}))
 
 ## Summarize the results from 3 methods, and report bias and sd for all estimators
 ### Bias
